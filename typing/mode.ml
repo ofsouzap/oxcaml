@@ -1573,10 +1573,10 @@ module C = Lattices_mono
 module Solver = Solver_mono (Hint) (C)
 module S = Solver
 
-let solver_error_to_serror : 'a S.error -> 'a serror =
+let solver_error_to_serror : 'a S.error -> 'a axerror =
  fun { left; left_hint = _; right; right_hint = _ } -> { left; right }
 
-let flip_and_solver_error_to_serror : 'a S.error -> 'a serror =
+let flip_and_solver_error_to_serror : 'a S.error -> 'a axerror =
  fun { left; left_hint = _; right; right_hint = _ } -> { right; left }
 
 type monadic = C.monadic =
@@ -1662,7 +1662,7 @@ module Comonadic_gen (Obj : Obj) = struct
 
   type lr = (allowed * allowed) t
 
-  type nonrec error = const serror
+  type nonrec error = const axerror
 
   type equate_error = equate_step * error
 
@@ -1740,7 +1740,7 @@ module Monadic_gen (Obj : Obj) = struct
 
   type lr = (allowed * allowed) t
 
-  type nonrec error = const serror
+  type nonrec error = const axerror
 
   type equate_error = equate_step * error
 
@@ -2041,7 +2041,7 @@ module Comonadic_with (Areality : Areality) = struct
 
   type 'a axis = (Obj.const, 'a) C.Axis.t
 
-  type error = Error : 'a axis * 'a serror -> error
+  type error = Error : 'a axis * 'a axerror -> error
 
   type equate_error = equate_step * error
 
@@ -2092,7 +2092,7 @@ module Comonadic_with (Areality : Areality) = struct
 
   let legacy = of_const Const.legacy
 
-  let axis_of_error (err : Obj.const serror) : error =
+  let axis_of_error (err : Obj.const axerror) : error =
     let { left =
             { areality = areality1;
               linearity = linearity1;
@@ -2165,7 +2165,7 @@ module Monadic = struct
 
   type 'a axis = (Obj.const, 'a) C.Axis.t
 
-  type error = Error : 'a axis * 'a serror -> error
+  type error = Error : 'a axis * 'a axerror -> error
 
   type equate_error = equate_step * error
 
@@ -2215,7 +2215,7 @@ module Monadic = struct
 
   let legacy = of_const Const.legacy
 
-  let axis_of_error (err : Obj.const serror) : error =
+  let axis_of_error (err : Obj.const axerror) : error =
     let { left =
             { uniqueness = uniqueness1;
               contention = contention1;
@@ -2628,7 +2628,7 @@ module Value_with (Areality : Areality) = struct
     let monadic, b1 = Monadic.newvar_below monadic in
     { monadic; comonadic }, b0 || b1
 
-  type error = Error : ('a, _, _) Axis.t * 'a serror -> error
+  type error = Error : ('a, _, _) Axis.t * 'a axerror -> error
 
   type equate_error = equate_step * error
 
@@ -2968,7 +2968,7 @@ module Modality = struct
 
     type 'a axis = 'a Mode.axis
 
-    type error = Error : 'a axis * 'a raw serror -> error
+    type error = Error : 'a axis * 'a raw axerror -> error
 
     module Const = struct
       type t = Join_const of Mode.Const.t
@@ -3100,7 +3100,7 @@ module Modality = struct
 
     type 'a axis = 'a Mode.axis
 
-    type error = Error : 'a axis * 'a raw serror -> error
+    type error = Error : 'a axis * 'a raw axerror -> error
 
     module Const = struct
       type t = Meet_const of Mode.Const.t
@@ -3247,7 +3247,7 @@ module Modality = struct
   end
 
   module Value = struct
-    type error = Error : ('a, _, _) Value.Axis.t * 'a raw serror -> error
+    type error = Error : ('a, _, _) Value.Axis.t * 'a raw axerror -> error
 
     type equate_error = equate_step * error
 
