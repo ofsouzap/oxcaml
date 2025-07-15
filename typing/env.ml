@@ -3217,7 +3217,7 @@ let escape_mode ~errors ~env ~loc ~item ~lid vmode escaping_context =
       may_lookup_error errors loc env
         (Local_value_escaping (item, lid, escaping_context))
   end;
-  vmode
+    vmode
 
 let share_mode ~errors ~env ~loc ~item ~lid vmode shared_context =
   match
@@ -3239,7 +3239,10 @@ let closure_mode ~errors ~env ~loc ~item ~lid
   ({mode = {Mode.monadic; comonadic}; _} as vmode) locality_context comonadic0 =
   begin
     match
-      Mode.Value.Comonadic.submode comonadic comonadic0
+      Mode.Value.Comonadic.submode comonadic
+        (Mode.Value.Comonadic.apply_hint
+          (Mode.Hint.Close_over loc)
+          comonadic0)
     with
     | Error e ->
         may_lookup_error errors loc env
@@ -3249,7 +3252,7 @@ let closure_mode ~errors ~env ~loc ~item ~lid
   let monadic =
     Mode.Value.Monadic.join
       [ monadic;
-        Mode.Value.comonadic_to_monadic comonadic0 ]
+        Mode.Value.comonadic_to_monadic ~hint:(Mode.Hint.Close_over loc) comonadic0 ]
   in
   {vmode with mode = {monadic; comonadic}}
 
