@@ -4575,7 +4575,8 @@ let report_error ~loc _env = function
       Location.errorf ~loc
         "This instance has multiple arguments with the name %a."
         (Style.as_inline_code Global_module.Parameter_name.print) name
-  | Submode_failed (Error (ax, {left; right})) ->
+  | Submode_failed (Error (ax, err)) ->
+  let left, right = Mode.axerror_get_consts_pair err in
       Location.errorf ~loc
         "This value is %a, but expected to be %a because it is inside a module."
         (Style.as_inline_code (Mode.Value.Const.print_axis ax)) left

@@ -1573,12 +1573,6 @@ module C = Lattices_mono
 module Solver = Solver_mono (Hint) (C)
 module S = Solver
 
-let solver_error_to_serror : 'a S.error -> 'a axerror =
- fun { left; left_hint = _; right; right_hint = _ } -> { left; right }
-
-let flip_and_solver_error_to_serror : 'a S.error -> 'a axerror =
- fun { left; left_hint = _; right; right_hint = _ } -> { right; left }
-
 type monadic = C.monadic =
   { uniqueness : C.Uniqueness.t;
     contention : C.Contention.t;
@@ -1594,6 +1588,249 @@ type 'a comonadic_with = 'a C.comonadic_with =
   }
 
 module Axis = C.Axis
+
+let axhint_get_const = function
+  | Morph (a, _, _) -> a
+  | Const (a, _) -> a
+  | Empty a -> a
+
+let axerror_get_left_const { left; right = _ } = axhint_get_const left
+
+let axerror_get_right_const { left = _; right } = axhint_get_const right
+
+let axerror_get_consts_pair err =
+  axerror_get_left_const err, axerror_get_right_const err
+
+(** Description of an input axis responsible for an output axis of a morphism *)
+type 'a responsible_axis =
+  | NoneResponsible : 'a responsible_axis
+      (** None of the input axes are responsible for the output axis *)
+  | SourceIsSingle : 'a responsible_axis
+      (** The input of the morphism is a single axis object that is responsible for the output axis *)
+  | Axis : ('a, 'a_x) Axis.t -> 'a responsible_axis
+      (** The specified axis of the input object is responsible for the output axis *)
+
+(** Given a morphism either from a product object to a single axis, or
+     from a product object to a single axis, this function
+     is used to find the axis in the source that is responsible for the
+     output axis object.
+
+     If the source object is a single axis, this function should end up
+     returning [SourceIsSingle], otherwise the source object is a product, and the
+     function should return [Axis ax] where [ax] is the single axis in the
+     source object that is responsible for the output.
+
+     NOTE: there is also a rare special case where none of the axes of the source object
+      (whether it is a product or a single axis) are responsible, in which
+      case [NoneResponsible] is returned.
+
+     NOTE: given the morphisms defined, there should only ever be a single source
+     axis responsible for the output axis, otherwise this function wouldn't be properly
+     definable. *)
+let rec find_responsible_axis_single :
+    type a b l r. (a, b, l * r) C.morph -> a responsible_axis =
+  let open Lattices_mono in
+  fun (type a b l r) (m : (a, b, l * r) morph) ->
+    match m with
+    | Proj (_a_obj, ax) -> Axis ax
+    | Compose (g, f) -> (
+      match find_responsible_axis_single g with
+      | NoneResponsible -> NoneResponsible
+      | SourceIsSingle -> find_responsible_axis_single f
+      | Axis c_ax -> find_responsible_axis_prod f c_ax)
+    | Id | Meet_with _ | Imply _ -> SourceIsSingle
+    | Max_with _ | Min_with _ | Map_comonadic _ | Monadic_to_comonadic_min
+    | Comonadic_to_monadic _ | Monadic_to_comonadic_max ->
+      assert false
+    | Local_to_regional | Regional_to_local | Locality_as_regionality
+    | Regional_to_global | Global_to_regional ->
+      SourceIsSingle
+
+(** This function is similar to [find_responsible_axis_single] but assumes that the
+output object of the morphism is a product object. *)
+and find_responsible_axis_prod :
+    type a b b_ax l r.
+    (a, b, l * r) C.morph -> (b, b_ax) Axis.t -> a responsible_axis =
+  let open Lattices_mono in
+  (* fun (type a b b_ax l r) (m : (a, b, l * r) morph) (ax : (b, b_ax) Axis.t) -> *)
+  fun m ax ->
+    let handle_monadic_to_comonadic (type x y)
+        (ax : (x comonadic_with, y) Axis.t) =
+      (* See [Lattices_mono.monadic_to_comonadic_min] for why these are as they are *)
+      match ax with
+      | Areality -> NoneResponsible
+      | Linearity -> Axis Uniqueness
+      | Portability -> Axis Contention
+      | Yielding -> NoneResponsible
+      | Statefulness -> Axis Visibility
+    in
+    match m, ax with
+    | Compose (g, f), ax -> (
+      (* Operates similarly to the equivalent branch in [find_responsible_axis_single] *)
+      match find_responsible_axis_prod g ax with
+      | NoneResponsible -> NoneResponsible
+      | SourceIsSingle -> find_responsible_axis_single f
+      | Axis c_ax -> find_responsible_axis_prod f c_ax)
+    | Id, _ | Meet_with _, _ | Imply _, _ | Map_comonadic _, _ -> SourceIsSingle
+    | Max_with m_ax, ax | Min_with m_ax, ax -> (
+      match Axis.eq m_ax ax with
+      | None -> NoneResponsible
+      | Some Refl -> SourceIsSingle)
+    | Monadic_to_comonadic_min, ax -> handle_monadic_to_comonadic ax
+    | Monadic_to_comonadic_max, ax ->
+      (* Can't use an "or" pattern here due to GADT matching limitations,
+         so I've just made a separate function for code neatness, then inlined it *)
+      handle_monadic_to_comonadic ax
+    | Comonadic_to_monadic _, ax -> (
+      (* See [Lattices_mono.monadic_to_comonadic_min] for why these are as they are *)
+      match ax with
+      | Uniqueness -> Axis Linearity
+      | Contention -> Axis Portability
+      | Visibility -> Axis Statefulness)
+    | Proj _, _
+    | Local_to_regional, _
+    | Regional_to_local, _
+    | Locality_as_regionality, _
+    | Regional_to_global, _
+    | Global_to_regional, _ ->
+      .
+
+(** Container for an adjoint function. We use a special record type instead of inlining
+the type so that we can have universal quantification over the input object types. *)
+type ('l1, 'r1, 'l2, 'r2) shint_to_axhint_side =
+  | LeftAdjoint : (_, allowed, allowed, disallowed) shint_to_axhint_side
+  | RightAdjoint : (allowed, _, disallowed, allowed) shint_to_axhint_side
+
+let shint_to_axhint_side_fn :
+    type a b l1 l2 r1 r2.
+    (l1, r1, l2, r2) shint_to_axhint_side ->
+    b C.obj ->
+    (a, b, l1 * r1) C.morph ->
+    (b, a, l2 * r2) C.morph =
+  fun (type a b l1 l2 r1 r2) (side : (l1, r1, l2, r2) shint_to_axhint_side) :
+      (b C.obj -> (a, b, l1 * r1) C.morph -> (b, a, l2 * r2) C.morph) ->
+   match side with
+   | LeftAdjoint -> C.left_adjoint
+   | RightAdjoint -> C.right_adjoint
+
+let shint_to_axhint_side_le :
+    type a l1 l2 r1 r2.
+    (l1, r1, l2, r2) shint_to_axhint_side -> a C.obj -> a -> a -> bool =
+  fun (type a l1 l2 r1 r2) (side : (l1, r1, l2, r2) shint_to_axhint_side)
+      (a_obj : a C.obj) x y ->
+   match side with
+   | LeftAdjoint -> C.le a_obj x y
+   | RightAdjoint -> C.le a_obj y x
+
+let rec shint_to_axhint :
+    type r a left1 left2 right1 right2.
+    r Lattices_mono.obj ->
+    r ->
+    (r, left1 * right1) S.hint ->
+    (r, a) Axis.t ->
+    (left1, right1, left2, right2) shint_to_axhint_side ->
+    (a, Hint.morph, Hint.const) axhint =
+  let open Lattices_mono in
+  fun (type r a) (r_obj : r obj) (r : r) (r_shint : (r, left1 * right1) S.hint)
+      (ax : (r, a) Axis.t) side ->
+    (* This function is for when we have a solver hint (aka "shint") for a product lattice and
+       wish to project the hint to be for a single axis and convert it to a mode "axhint". *)
+    let a_obj = proj_obj ax r_obj in
+    let proj = Proj (r_obj, ax) in
+    let a = apply a_obj proj r in
+    let a_shint : (a, left1 * right1) S.hint =
+      let rec compose_shint_with_proj = function
+        | S.Morph (morph_hint, morph, b_shint) ->
+          S.Morph (morph_hint, compose a_obj proj morph, b_shint)
+        | S.Const r_const_hint -> S.Const r_const_hint
+        | S.Branch (x, x_hint, y, y_hint) ->
+          S.Branch
+            ( apply a_obj proj x,
+              compose_shint_with_proj x_hint,
+              apply a_obj proj y,
+              compose_shint_with_proj y_hint )
+      in
+      compose_shint_with_proj r_shint
+    in
+    single_axis_shint_to_axhint a_obj a a_shint side
+
+and single_axis_shint_to_axhint :
+    type a left1 right1 left2 right2.
+    a Lattices_mono.obj ->
+    a ->
+    (a, left1 * right1) S.hint ->
+    (left1, right1, left2, right2) shint_to_axhint_side ->
+    (a, Hint.morph, Hint.const) axhint =
+  let open Lattices_mono in
+  fun (type a left1 right1 left2 right2) (a_obj : a obj) (a : a)
+      (a_shint_inp : (a, left1 * right1) S.hint)
+      (side : (left1, right1, left2, right2) shint_to_axhint_side) ->
+    (* This function is for when we have a solver hint (aka "shint") for a
+       single axis and wish to convert it to a mode "axhint". *)
+    match a_shint_inp with
+    | Morph (morph_hint, morph, b_shint) -> (
+      let b_obj = src a_obj morph in
+      let morph_inv : (a, _, left2 * right2) morph =
+        shint_to_axhint_side_fn side a_obj morph
+      in
+      let b = apply b_obj morph_inv a in
+      match find_responsible_axis_single morph with
+      | NoneResponsible -> Empty a
+      | SourceIsSingle ->
+        let b_hint = single_axis_shint_to_axhint b_obj b b_shint side in
+        Morph (a, morph_hint, b_hint)
+      | Axis b_ax ->
+        let b_hint = shint_to_axhint b_obj b b_shint b_ax side in
+        Morph (a, morph_hint, b_hint))
+    | Const a_const_hint -> Const (a, a_const_hint)
+    | Branch (x, x_hint, y, y_hint) ->
+      let chosen, chosen_hint =
+        if shint_to_axhint_side_le side a_obj x y
+        then x, x_hint
+        else if shint_to_axhint_side_le side a_obj y x
+        then y, y_hint
+        else
+          (* As we are dealing with a single axis, it should be totally-ordered, so this case should be impossible *)
+          assert false
+      in
+      single_axis_shint_to_axhint a_obj chosen chosen_hint side
+
+let flip_axerror ({ left; right } : _ axerror) : _ axerror =
+  { left = right; right = left }
+
+(** Take a solver error for a product object, and an axis to project to, and
+convert the error to an [axerror] *)
+let solver_error_to_axerror :
+    type r a.
+    r Lattices_mono.obj ->
+    (r, a) Axis.t ->
+    r S.error ->
+    (a, Hint.morph, Hint.const) axerror =
+ fun r_obj axis { left; left_hint; right; right_hint } ->
+  let left_projected = shint_to_axhint r_obj left left_hint axis RightAdjoint in
+  let right_projected =
+    shint_to_axhint r_obj right right_hint axis LeftAdjoint
+  in
+  { left = left_projected; right = right_projected }
+
+let flipped_solver_error_to_axerror r_obj axis err =
+  solver_error_to_axerror r_obj axis err |> flip_axerror
+
+(** Take a solver error for a single axis object and convert it to an [axerror] *)
+let single_axis_solver_error_to_axerror :
+    type a.
+    a Lattices_mono.obj -> a S.error -> (a, Hint.morph, Hint.const) axerror =
+ fun a_obj { left; left_hint; right; right_hint } ->
+  let left_projected =
+    single_axis_shint_to_axhint a_obj left left_hint RightAdjoint
+  in
+  let right_projected =
+    single_axis_shint_to_axhint a_obj right right_hint LeftAdjoint
+  in
+  { left = left_projected; right = right_projected }
+
+let flipped_single_axis_solver_error_to_axerror r_obj err =
+  single_axis_solver_error_to_axerror r_obj err |> flip_axerror
 
 type changes = S.changes
 
@@ -1651,7 +1888,10 @@ let equate_from_submode' submode m0 m1 =
     | Ok () -> Ok ())
   [@@inline]
 
-module Comonadic_gen (Obj : Obj) = struct
+(* Common code for comonadic and monadic objects, for both single-axis
+   and product lattices *)
+
+module Comonadic_common_gen (Obj : Obj) = struct
   open Obj
 
   type 'd t = (const, 'l * 'r) Solver.mode constraint 'd = 'l * 'r
@@ -1661,10 +1901,6 @@ module Comonadic_gen (Obj : Obj) = struct
   type r = (disallowed * allowed) t
 
   type lr = (allowed * allowed) t
-
-  type nonrec error = const axerror
-
-  type equate_error = equate_step * error
 
   type (_, _, 'd) sided = 'd t
 
@@ -1686,23 +1922,9 @@ module Comonadic_gen (Obj : Obj) = struct
 
   let newvar_below m = Solver.newvar_below obj m
 
-  let submode_log a b ~log = Solver.submode obj a b ~log
-
-  let submode a b =
-    try_with_log (submode_log a b) |> Result.map_error solver_error_to_serror
-
   let join l = Solver.join obj l
 
   let meet l = Solver.meet obj l
-
-  let submode_exn m0 m1 = assert (submode m0 m1 |> Result.is_ok)
-
-  let equate a b =
-    try_with_log (equate_from_submode submode_log a b)
-    |> Result.map_error (fun (eq_step, err) ->
-           eq_step, solver_error_to_serror err)
-
-  let equate_exn m0 m1 = assert (equate m0 m1 |> Result.is_ok)
 
   let print ?verbose () ppf m = Solver.print ?verbose obj ppf m
 
@@ -1728,7 +1950,7 @@ module Comonadic_gen (Obj : Obj) = struct
 end
 [@@inline]
 
-module Monadic_gen (Obj : Obj) = struct
+module Monadic_common_gen (Obj : Obj) = struct
   (* Monadic lattices are flipped. See "Notes on flipping". *)
   open Obj
 
@@ -1739,10 +1961,6 @@ module Monadic_gen (Obj : Obj) = struct
   type r = (disallowed * allowed) t
 
   type lr = (allowed * allowed) t
-
-  type nonrec error = const axerror
-
-  type equate_error = equate_step * error
 
   type (_, _, 'd) sided = 'd t
 
@@ -1764,21 +1982,9 @@ module Monadic_gen (Obj : Obj) = struct
 
   let newvar_below m = Solver.newvar_above obj m
 
-  let submode_log a b ~log =
-    Solver.submode obj b a ~log
-    |> Result.map_error flip_and_solver_error_to_serror
-
-  let submode a b = try_with_log (submode_log a b)
-
   let join l = Solver.meet obj l
 
   let meet l = Solver.join obj l
-
-  let submode_exn m0 m1 = assert (submode m0 m1 |> Result.is_ok)
-
-  let equate a b = try_with_log (equate_from_submode submode_log a b)
-
-  let equate_exn m0 m1 = assert (equate m0 m1 |> Result.is_ok)
 
   let print ?verbose () ppf m = Solver.print ?verbose obj ppf m
 
@@ -1798,6 +2004,56 @@ module Monadic_gen (Obj : Obj) = struct
 end
 [@@inline]
 
+(* Common code for comonadic and monadic objects, only for single axes *)
+
+module Comonadic_axis_gen (Obj : Obj) = struct
+  open Obj
+  include Comonadic_common_gen (Obj)
+
+  type error = (const, Hint.morph, Hint.const) axerror
+
+  type equate_error = equate_step * error
+
+  let solver_error_to_axerror = single_axis_solver_error_to_axerror Obj.obj
+
+  let submode_log a b ~log =
+    Solver.submode obj a b ~log |> Result.map_error solver_error_to_axerror
+
+  let submode a b = try_with_log (submode_log a b)
+
+  let submode_exn m0 m1 = assert (submode m0 m1 |> Result.is_ok)
+
+  let equate a b = try_with_log (equate_from_submode submode_log a b)
+
+  let equate_exn m0 m1 = assert (equate m0 m1 |> Result.is_ok)
+end
+[@@inline]
+
+module Monadic_axis_gen (Obj : Obj) = struct
+  open Obj
+  include Monadic_common_gen (Obj)
+
+  type error = (const, Hint.morph, Hint.const) axerror
+
+  type equate_error = equate_step * error
+
+  let flipped_solver_error_to_axerror =
+    flipped_single_axis_solver_error_to_axerror Obj.obj
+
+  let submode_log a b ~log =
+    Solver.submode obj b a ~log
+    |> Result.map_error flipped_solver_error_to_axerror
+
+  let submode a b = try_with_log (submode_log a b)
+
+  let submode_exn m0 m1 = assert (submode m0 m1 |> Result.is_ok)
+
+  let equate a b = try_with_log (equate_from_submode submode_log a b)
+
+  let equate_exn m0 m1 = assert (equate m0 m1 |> Result.is_ok)
+end
+[@@inline]
+
 module Locality = struct
   module Const = C.Locality
 
@@ -1807,7 +2063,7 @@ module Locality = struct
     let obj = C.Locality
   end
 
-  include Comonadic_gen (Obj)
+  include Comonadic_axis_gen (Obj)
 
   let global = of_const Global
 
@@ -1839,7 +2095,7 @@ module Regionality = struct
     let obj = C.Regionality
   end
 
-  include Comonadic_gen (Obj)
+  include Comonadic_axis_gen (Obj)
 
   let local = of_const Const.Local
 
@@ -1861,7 +2117,7 @@ module Linearity = struct
     let obj : _ C.obj = C.Linearity
   end
 
-  include Comonadic_gen (Obj)
+  include Comonadic_axis_gen (Obj)
 
   let many = of_const Many
 
@@ -1881,7 +2137,7 @@ module Statefulness = struct
     let obj = C.Statefulness
   end
 
-  include Comonadic_gen (Obj)
+  include Comonadic_axis_gen (Obj)
 
   let stateless = of_const Stateless
 
@@ -1904,7 +2160,7 @@ module Visibility = struct
     let obj = C.Visibility_op
   end
 
-  include Monadic_gen (Obj)
+  include Monadic_axis_gen (Obj)
 
   let immutable = of_const Immutable
 
@@ -1926,7 +2182,7 @@ module Portability = struct
     let obj : _ C.obj = C.Portability
   end
 
-  include Comonadic_gen (Obj)
+  include Comonadic_axis_gen (Obj)
 
   let legacy = of_const Const.legacy
 
@@ -1946,7 +2202,7 @@ module Uniqueness = struct
     let obj = C.Uniqueness_op
   end
 
-  include Monadic_gen (Obj)
+  include Monadic_axis_gen (Obj)
 
   let aliased = of_const Aliased
 
@@ -1967,7 +2223,7 @@ module Contention = struct
     let obj = C.Contention_op
   end
 
-  include Monadic_gen (Obj)
+  include Monadic_axis_gen (Obj)
 
   let legacy = of_const Const.legacy
 
@@ -1987,7 +2243,7 @@ module Yielding = struct
     let obj = C.Yielding
   end
 
-  include Comonadic_gen (Obj)
+  include Comonadic_axis_gen (Obj)
 
   let yielding = of_const Yielding
 
@@ -2037,11 +2293,11 @@ module Comonadic_with (Areality : Areality) = struct
     let obj = C.comonadic_with_obj Areality.Obj.obj
   end
 
-  include Comonadic_gen (Obj)
+  include Comonadic_common_gen (Obj)
 
   type 'a axis = (Obj.const, 'a) C.Axis.t
 
-  type error = Error : 'a axis * 'a axerror -> error
+  type error = Error : 'a axis * ('a, Hint.morph, Hint.const) axerror -> error
 
   type equate_error = equate_step * error
 
@@ -2092,23 +2348,28 @@ module Comonadic_with (Areality : Areality) = struct
 
   let legacy = of_const Const.legacy
 
-  let axis_of_error (err : Obj.const axerror) : error =
-    let { left =
-            { areality = areality1;
-              linearity = linearity1;
-              portability = portability1;
-              yielding = yielding1;
-              statefulness = statefulness1
-            };
-          right =
-            { areality = areality2;
-              linearity = linearity2;
-              portability = portability2;
-              yielding = yielding2;
-              statefulness = statefulness2
-            }
+  type axis_with_proj_pair =
+    | Axis_with_proj_pair : 'a axis * 'a * 'a -> axis_with_proj_pair
+
+  (* Given the left and right parts of a submoding error, return the offending axis,
+     and the projections of the left and right constants in that axis. *)
+  let axis_of_error (left : Obj.const) (right : Obj.const) : axis_with_proj_pair
+      =
+    let { areality = areality1;
+          linearity = linearity1;
+          portability = portability1;
+          yielding = yielding1;
+          statefulness = statefulness1
         } =
-      err
+      left
+    in
+    let { areality = areality2;
+          linearity = linearity2;
+          portability = portability2;
+          yielding = yielding2;
+          statefulness = statefulness2
+        } =
+      right
     in
     if Areality.Const.le areality1 areality2
     then
@@ -2120,36 +2381,35 @@ module Comonadic_with (Areality : Areality) = struct
           then
             if Statefulness.Const.le statefulness1 statefulness2
             then assert false
-            else
-              Error
-                ( Statefulness,
-                  { left = err.left.statefulness;
-                    right = err.right.statefulness
-                  } )
-          else
-            Error
-              ( Yielding,
-                { left = err.left.yielding; right = err.right.yielding } )
-        else
-          Error
-            ( Portability,
-              { left = err.left.portability; right = err.right.portability } )
-      else
-        Error
-          (Linearity, { left = err.left.linearity; right = err.right.linearity })
-    else
-      Error (Areality, { left = err.left.areality; right = err.right.areality })
+            else Axis_with_proj_pair (Statefulness, statefulness1, statefulness2)
+          else Axis_with_proj_pair (Yielding, yielding1, yielding2)
+        else Axis_with_proj_pair (Portability, portability1, portability2)
+      else Axis_with_proj_pair (Linearity, linearity1, linearity2)
+    else Axis_with_proj_pair (Areality, areality1, areality2)
 
-  (* overriding to report the offending axis *)
+  (** Take a solver error and determine the problematic axis, assuming
+  the operation we were trying to do was [left <= right], then return an
+  [axerror] in that axis, as well as the axis itself *)
+  let axis_of_solver_error (err : Obj.const S.error) : error =
+    let left = err.left in
+    let right = err.right in
+    let (Axis_with_proj_pair (ax, _, _)) = axis_of_error left right in
+    Error (ax, solver_error_to_axerror Obj.obj ax err)
+
+  (* unlike for a single axis object, the below submoding and equality functions
+     report the offending axis *)
   let submode_log m0 m1 ~log : _ result =
-    match submode_log m0 m1 ~log with
+    match Solver.submode Obj.obj m0 m1 ~log with
     | Ok () -> Ok ()
-    | Error e -> Error (e |> solver_error_to_serror |> axis_of_error)
+    | Error e -> Error (e |> axis_of_solver_error)
 
   let submode a b = try_with_log (submode_log a b)
 
-  (* override to report the offending axis *)
+  let submode_exn m0 m1 = assert (submode m0 m1 |> Result.is_ok)
+
   let equate a b = try_with_log (equate_from_submode submode_log a b)
+
+  let equate_exn m0 m1 = assert (equate m0 m1 |> Result.is_ok)
 end
 [@@inline]
 
@@ -2161,11 +2421,11 @@ module Monadic = struct
     let obj = C.Monadic_op
   end
 
-  include Monadic_gen (Obj)
+  include Monadic_common_gen (Obj)
 
   type 'a axis = (Obj.const, 'a) C.Axis.t
 
-  type error = Error : 'a axis * 'a axerror -> error
+  type error = Error : 'a axis * ('a, Hint.morph, Hint.const) axerror -> error
 
   type equate_error = equate_step * error
 
@@ -2215,19 +2475,24 @@ module Monadic = struct
 
   let legacy = of_const Const.legacy
 
-  let axis_of_error (err : Obj.const axerror) : error =
-    let { left =
-            { uniqueness = uniqueness1;
-              contention = contention1;
-              visibility = visibility1
-            };
-          right =
-            { uniqueness = uniqueness2;
-              contention = contention2;
-              visibility = visibility2
-            }
+  type axis_with_proj_pair =
+    | Axis_with_proj_pair : 'a axis * 'a * 'a -> axis_with_proj_pair
+
+  (* Given the left and right parts of a submoding error, return the offending axis,
+     and the projections of the left and right constants in that axis. *)
+  let axis_of_error (left : Obj.const) (right : Obj.const) : axis_with_proj_pair
+      =
+    let { uniqueness = uniqueness1;
+          contention = contention1;
+          visibility = visibility1
         } =
-      err
+      left
+    in
+    let { uniqueness = uniqueness2;
+          contention = contention2;
+          visibility = visibility2
+        } =
+      right
     in
     if Uniqueness.Const.le uniqueness1 uniqueness2
     then
@@ -2235,29 +2500,37 @@ module Monadic = struct
       then
         if Visibility.Const.le visibility1 visibility2
         then assert false
-        else
-          Error
-            ( Visibility,
-              { left = err.left.visibility; right = err.right.visibility } )
-      else
-        Error
-          ( Contention,
-            { left = err.left.contention; right = err.right.contention } )
-    else
-      Error
-        ( Uniqueness,
-          { left = err.left.uniqueness; right = err.right.uniqueness } )
+        else Axis_with_proj_pair (Visibility, visibility1, visibility2)
+      else Axis_with_proj_pair (Contention, contention1, contention2)
+    else Axis_with_proj_pair (Uniqueness, uniqueness1, uniqueness2)
 
-  (* overriding to report the offending axis *)
+  (** Take a solver error and determine the problematic axis, assuming
+  the operation we were trying to do was [left <= right], then return an
+  [axerror] in that axis, as well as the axis itself. Before returning, since
+  the monadic fragment is flipped, this function will flip the error sides *)
+  let flipped_axis_of_solver_error (err : Obj.const S.error) : error =
+    let left = err.left in
+    let right = err.right in
+    let (Axis_with_proj_pair (ax, _, _)) = axis_of_error left right in
+    Error (ax, flipped_solver_error_to_axerror Obj.obj ax err)
+
+  (* unlike for a single axis object, the below submoding and equality functions
+     report the offending axis *)
+
   let submode_log m0 m1 ~log : _ result =
-    match submode_log m0 m1 ~log with
+    (* Note, the order of the arguments is flipped because the monadic
+       fragment is flipped. This must be "un-flipped" when reporting errors *)
+    match Solver.submode Obj.obj m1 m0 ~log with
     | Ok () -> Ok ()
-    | Error e -> Error (e |> axis_of_error)
+    | Error e -> Error (e |> flipped_axis_of_solver_error)
 
   let submode a b = try_with_log (submode_log a b)
 
-  (* override to report the offending axis *)
+  let submode_exn m0 m1 = assert (submode m0 m1 |> Result.is_ok)
+
   let equate a b = try_with_log (equate_from_submode submode_log a b)
+
+  let equate_exn m0 m1 = assert (equate m0 m1 |> Result.is_ok)
 end
 
 type ('mo, 'como) monadic_comonadic =
@@ -2628,7 +2901,8 @@ module Value_with (Areality : Areality) = struct
     let monadic, b1 = Monadic.newvar_below monadic in
     { monadic; comonadic }, b0 || b1
 
-  type error = Error : ('a, _, _) Axis.t * 'a axerror -> error
+  type error =
+    | Error : ('a, _, _) Axis.t * ('a, Hint.morph, Hint.const) axerror -> error
 
   type equate_error = equate_step * error
 
@@ -2968,7 +3242,7 @@ module Modality = struct
 
     type 'a axis = 'a Mode.axis
 
-    type error = Error : 'a axis * 'a raw axerror -> error
+    type error = Error : 'a axis * ('a raw, empty, empty) axerror -> error
 
     module Const = struct
       type t = Join_const of Mode.Const.t
@@ -2985,11 +3259,15 @@ module Modality = struct
           if Mode.Const.le c0 c1
           then Ok ()
           else
-            let (Error (ax, { left; right })) =
-              Mode.axis_of_error { left = c0; right = c1 }
+            let (Axis_with_proj_pair (ax, left, right)) =
+              Mode.axis_of_error c0 c1
             in
             Error
-              (Error (ax, { left = Join_with left; right = Join_with right }))
+              (Error
+                 ( ax,
+                   { left = Empty (Join_with left);
+                     right = Empty (Join_with right)
+                   } ))
 
       let concat ~then_ t =
         match then_, t with
@@ -3027,8 +3305,9 @@ module Modality = struct
           Error
             (Error
                ( ax,
-                 { left = Join_with left; right = Join_with (Axis.proj ax c) }
-               )))
+                 { left = Empty (Join_with (axhint_get_const left));
+                   right = Empty (Join_with (Axis.proj ax c))
+                 } )))
       | Diff (_, _m0), Diff (_, _m1) ->
         (* [m1] is a left mode so it cannot appear on the right. So we can't do
            a proper check. However, this branch is only hit by
@@ -3100,7 +3379,7 @@ module Modality = struct
 
     type 'a axis = 'a Mode.axis
 
-    type error = Error : 'a axis * 'a raw axerror -> error
+    type error = Error : 'a axis * ('a raw, empty, empty) axerror -> error
 
     module Const = struct
       type t = Meet_const of Mode.Const.t
@@ -3117,11 +3396,15 @@ module Modality = struct
           if Mode.Const.le c0 c1
           then Ok ()
           else
-            let (Error (ax, { left; right })) =
-              Mode.axis_of_error { left = c0; right = c1 }
+            let (Axis_with_proj_pair (ax, left, right)) =
+              Mode.axis_of_error c0 c1
             in
             Error
-              (Error (ax, { left = Meet_with left; right = Meet_with right }))
+              (Error
+                 ( ax,
+                   { left = Empty (Meet_with left);
+                     right = Empty (Meet_with right)
+                   } ))
 
       let concat ~then_ t =
         match then_, t with
@@ -3163,8 +3446,9 @@ module Modality = struct
           Error
             (Error
                ( ax,
-                 { left = Meet_with left; right = Meet_with (Axis.proj ax c) }
-               )))
+                 { left = Empty (Meet_with (axhint_get_const left));
+                   right = Empty (Meet_with (Axis.proj ax c))
+                 } )))
       | Exactly (_, _m0), Exactly (_, _m1) ->
         (* [m1] is a left mode, so there is no good way to check.
            However, this branch only hit by [wrap_constraint_with_shape],
@@ -3247,7 +3531,10 @@ module Modality = struct
   end
 
   module Value = struct
-    type error = Error : ('a, _, _) Value.Axis.t * 'a raw axerror -> error
+    type error =
+      | Error :
+          ('a, _, _) Value.Axis.t * ('a raw, empty, empty) axerror
+          -> error
 
     type equate_error = equate_step * error
 

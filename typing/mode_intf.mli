@@ -14,9 +14,23 @@
 
 open Allowance
 
-type 'a axerror =
-  { left : 'a;
-    right : 'a
+type empty = |
+
+(** Hints for the mode solvers. These are axis-specific hints that contain a trace
+of the values in a single axis from an error. *)
+type ('a, 'morph, 'const) axhint =
+  | Morph :
+      'a * 'morph * ('b, 'morph, 'const) axhint
+      -> ('a, 'morph, 'const) axhint
+  | Const : 'a * 'const -> ('a, 'morph, 'const) axhint
+  | Empty : 'a -> ('a, 'morph, 'const) axhint
+
+(** Errors for the mode solvers. These are axis-specific processed versions of
+the errors returned by the solver, as the solver errors consider axis products.
+The hints in this error type are [axhint] values. *)
+type ('a, 'morph, 'const) axerror =
+  { left : ('a, 'morph, 'const) axhint;
+    right : ('a, 'morph, 'const) axhint
   }
 
 (* While all our lattices are bi-Heyting algebras (see [mode.ml]), the extra
@@ -129,22 +143,51 @@ module type Common = sig
 end
 
 module type Common_axis = sig
+  type hint_morph
+
+  type hint_const
+
   module Const : Lattice
 
-  include Common with module Const := Const and type error = Const.t axerror
+  include
+    Common
+      with module Const := Const
+       and type error = (Const.t, hint_morph, hint_const) axerror
 end
 
 module type Common_product = sig
   type 'a axis
 
+  type hint_morph
+
+  type hint_const
+
   module Const : Lattice_product with type 'a axis = 'a axis
 
-  type error = Error : 'a axis * 'a axerror -> error
+  type error = Error : 'a axis * ('a, hint_morph, hint_const) axerror -> error
 
   include Common with type error := error and module Const := Const
 end
 
 module type S = sig
+  module Hint : sig
+    type const
+
+    val const_none : const
+
+    type morph
+
+    val morph_none : morph
+  end
+
+  val axhint_get_const : ('a, 'morph, 'const) axhint -> 'a
+
+  val axerror_get_left_const : ('a, 'morph, 'const) axerror -> 'a
+
+  val axerror_get_right_const : ('a, 'morph, 'const) axerror -> 'a
+
+  val axerror_get_consts_pair : ('a, 'morph, 'const) axerror -> 'a * 'a
+
   type changes
 
   val undo_changes : changes -> unit
@@ -177,6 +220,8 @@ module type S = sig
       Common_axis
         with module Const := Const
          and type 'd t = (Const.t, 'd pos) mode
+         and type hint_morph := Hint.morph
+         and type hint_const := Hint.const
 
     val global : lr
 
@@ -213,6 +258,8 @@ module type S = sig
       Common_axis
         with module Const := Const
          and type 'd t = (Const.t, 'd pos) mode
+         and type hint_morph := Hint.morph
+         and type hint_const := Hint.const
 
     val global : lr
 
@@ -234,6 +281,8 @@ module type S = sig
       Common_axis
         with module Const := Const
          and type 'd t = (Const.t, 'd pos) mode
+         and type hint_morph := Hint.morph
+         and type hint_const := Hint.const
 
     val many : lr
 
@@ -253,6 +302,8 @@ module type S = sig
       Common_axis
         with module Const := Const
          and type 'd t = (Const.t, 'd pos) mode
+         and type hint_morph := Hint.morph
+         and type hint_const := Hint.const
   end
 
   module Uniqueness : sig
@@ -270,6 +321,8 @@ module type S = sig
       Common_axis
         with module Const := Const
          and type 'd t = (Const.t, 'd neg) mode
+         and type hint_morph := Hint.morph
+         and type hint_const := Hint.const
 
     val aliased : lr
 
@@ -292,6 +345,8 @@ module type S = sig
       Common_axis
         with module Const := Const
          and type 'd t = (Const.t, 'd neg) mode
+         and type hint_morph := Hint.morph
+         and type hint_const := Hint.const
   end
 
   module Yielding : sig
@@ -307,6 +362,8 @@ module type S = sig
       Common_axis
         with module Const := Const
          and type 'd t = (Const.t, 'd pos) mode
+         and type hint_morph := Hint.morph
+         and type hint_const := Hint.const
 
     val yielding : lr
 
@@ -327,6 +384,8 @@ module type S = sig
       Common_axis
         with module Const := Const
          and type 'd t = (Const.t, 'd pos) mode
+         and type hint_morph := Hint.morph
+         and type hint_const := Hint.const
 
     val stateless : lr
 
@@ -351,6 +410,8 @@ module type S = sig
       Common_axis
         with module Const := Const
          and type 'd t = (Const.t, 'd neg) mode
+         and type hint_morph := Hint.morph
+         and type hint_const := Hint.const
 
     val immutable : lr
 
@@ -401,6 +462,8 @@ module type S = sig
         Common_product
           with type Const.t = monadic
            and type 'a axis := (monadic, 'a) Axis.t
+           and type hint_morph := Hint.morph
+           and type hint_const := Hint.const
 
       module Const_op : Lattice with type t = Const.t
     end
@@ -409,6 +472,8 @@ module type S = sig
       Common_product
         with type Const.t = Areality.Const.t comonadic_with
          and type 'a axis := (Areality.Const.t comonadic_with, 'a) Axis.t
+         and type hint_morph := Hint.morph
+         and type hint_const := Hint.const
 
     module Axis' := Axis
 
@@ -503,7 +568,10 @@ module type S = sig
       val print_axis : ('a, _, _) Axis.t -> Format.formatter -> 'a -> unit
     end
 
-    type error = Error : ('a, _, _) Axis.t * 'a axerror -> error
+    type error =
+      | Error :
+          ('a, _, _) Axis.t * ('a, Hint.morph, Hint.const) axerror
+          -> error
 
     type 'd t = ('d Monadic.t, 'd Comonadic.t) monadic_comonadic
 
@@ -624,7 +692,10 @@ module type S = sig
     module Value : sig
       type atom := t
 
-      type error = Error : ('a, _, _) Value.Axis.t * 'a raw axerror -> error
+      type error =
+        | Error :
+            ('a, _, _) Value.Axis.t * ('a raw, empty, empty) axerror
+            -> error
 
       type nonrec equate_error = equate_step * error
 
