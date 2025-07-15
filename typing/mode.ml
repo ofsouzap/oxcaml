@@ -19,6 +19,8 @@ open Allowance
 open Solver
 open Mode_intf
 
+type empty = |
+
 type nonrec allowed = allowed
 
 type nonrec disallowed = disallowed
@@ -1646,6 +1648,18 @@ type 'a comonadic_with = 'a C.comonadic_with =
 
 module Axis = C.Axis
 
+let axhint_get_const = function
+  | Morph (a, _, _) -> a
+  | Const (a, _) -> a
+  | Empty a -> a
+
+let axerror_get_left_const { left; right = _ } = axhint_get_const left
+
+let axerror_get_right_const { left = _; right } = axhint_get_const right
+
+let axerror_get_consts_pair err =
+  axerror_get_left_const err, axerror_get_right_const err
+
 (** Description of an input axis responsible for an output axis of a morphism *)
 type 'a responsible_axis =
   | NoneResponsible : 'a responsible_axis
@@ -2383,11 +2397,13 @@ module Comonadic_with (Areality : Areality) = struct
 
   let legacy = of_const Const.legacy
 
-  (** Take a solver error and determine the problematic axis, assuming
-  the operation we were trying to do was [left <= right], then return an
-  [axerror] in that axis, as well as the axis itself *)
-  let axis_of_solver_error (err : Obj.const S.error) : error =
-    let left = err.left in
+  type axis_with_proj_pair =
+    | Axis_with_proj_pair : 'a axis * 'a * 'a -> axis_with_proj_pair
+
+  (* Given the left and right parts of a submoding error, return the offending axis,
+     and the projections of the left and right constants in that axis. *)
+  let axis_of_error (left : Obj.const) (right : Obj.const) : axis_with_proj_pair
+      =
     let { areality = areality1;
           linearity = linearity1;
           portability = portability1;
@@ -2396,7 +2412,6 @@ module Comonadic_with (Areality : Areality) = struct
         } =
       left
     in
-    let right = err.right in
     let { areality = areality2;
           linearity = linearity2;
           portability = portability2;
@@ -2415,17 +2430,20 @@ module Comonadic_with (Areality : Areality) = struct
           then
             if Statefulness.Const.le statefulness1 statefulness2
             then assert false
-            else
-              Error
-                ( Statefulness,
-                  solver_error_to_axerror Obj.obj Axis.Statefulness err )
-          else
-            Error (Yielding, solver_error_to_axerror Obj.obj Axis.Yielding err)
-        else
-          Error
-            (Portability, solver_error_to_axerror Obj.obj Axis.Portability err)
-      else Error (Linearity, solver_error_to_axerror Obj.obj Axis.Linearity err)
-    else Error (Areality, solver_error_to_axerror Obj.obj Axis.Areality err)
+            else Axis_with_proj_pair (Statefulness, statefulness1, statefulness2)
+          else Axis_with_proj_pair (Yielding, yielding1, yielding2)
+        else Axis_with_proj_pair (Portability, portability1, portability2)
+      else Axis_with_proj_pair (Linearity, linearity1, linearity2)
+    else Axis_with_proj_pair (Areality, areality1, areality2)
+
+  (** Take a solver error and determine the problematic axis, assuming
+  the operation we were trying to do was [left <= right], then return an
+  [axerror] in that axis, as well as the axis itself *)
+  let axis_of_solver_error (err : Obj.const S.error) : error =
+    let left = err.left in
+    let right = err.right in
+    let (Axis_with_proj_pair (ax, _, _)) = axis_of_error left right in
+    Error (ax, solver_error_to_axerror Obj.obj ax err)
 
   (* unlike for a single axis object, the below submoding and equality functions
      report the offending axis *)
@@ -2506,19 +2524,19 @@ module Monadic = struct
 
   let legacy = of_const Const.legacy
 
-  (** Take a solver error and determine the problematic axis, assuming
-  the operation we were trying to do was [left <= right], then return an
-  [axerror] in that axis, as well as the axis itself. Before returning, since
-  the monadic fragment is flipped, this function will flip the error sides *)
-  let flipped_axis_of_solver_error (err : Obj.const S.error) : error =
-    let left = err.left in
+  type axis_with_proj_pair =
+    | Axis_with_proj_pair : 'a axis * 'a * 'a -> axis_with_proj_pair
+
+  (* Given the left and right parts of a submoding error, return the offending axis,
+     and the projections of the left and right constants in that axis. *)
+  let axis_of_error (left : Obj.const) (right : Obj.const) : axis_with_proj_pair
+      =
     let { uniqueness = uniqueness1;
           contention = contention1;
           visibility = visibility1
         } =
       left
     in
-    let right = err.right in
     let { uniqueness = uniqueness2;
           contention = contention2;
           visibility = visibility2
@@ -2531,17 +2549,19 @@ module Monadic = struct
       then
         if Visibility.Const.le visibility1 visibility2
         then assert false
-        else
-          Error
-            ( Visibility,
-              flipped_solver_error_to_axerror Obj.obj Axis.Visibility err )
-      else
-        Error
-          ( Contention,
-            flipped_solver_error_to_axerror Obj.obj Axis.Contention err )
-    else
-      Error
-        (Uniqueness, flipped_solver_error_to_axerror Obj.obj Axis.Uniqueness err)
+        else Axis_with_proj_pair (Visibility, visibility1, visibility2)
+      else Axis_with_proj_pair (Contention, contention1, contention2)
+    else Axis_with_proj_pair (Uniqueness, uniqueness1, uniqueness2)
+
+  (** Take a solver error and determine the problematic axis, assuming
+  the operation we were trying to do was [left <= right], then return an
+  [axerror] in that axis, as well as the axis itself. Before returning, since
+  the monadic fragment is flipped, this function will flip the error sides *)
+  let flipped_axis_of_solver_error (err : Obj.const S.error) : error =
+    let left = err.left in
+    let right = err.right in
+    let (Axis_with_proj_pair (ax, _, _)) = axis_of_error left right in
+    Error (ax, flipped_solver_error_to_axerror Obj.obj ax err)
 
   (* unlike for a single axis object, the below submoding and equality functions
      report the offending axis *)
@@ -3271,8 +3291,7 @@ module Modality = struct
 
     type 'a axis = 'a Mode.axis
 
-    type error =
-      | Error : 'a axis * ('a raw, Hint.morph, Hint.const) axerror -> error
+    type error = Error : 'a axis * ('a raw, empty, empty) axerror -> error
 
     module Const = struct
       type t = Join_const of Mode.Const.t
@@ -3289,11 +3308,15 @@ module Modality = struct
           if Mode.Const.le c0 c1
           then Ok ()
           else
-            let (Error (ax, { left; right })) =
-              Mode.axis_of_solver_error { left = c0; right = c1 }
+            let (Axis_with_proj_pair (ax, left, right)) =
+              Mode.axis_of_error c0 c1
             in
             Error
-              (Error (ax, { left = Join_with left; right = Join_with right }))
+              (Error
+                 ( ax,
+                   { left = Empty (Join_with left);
+                     right = Empty (Join_with right)
+                   } ))
 
       let concat ~then_ t =
         match then_, t with
@@ -3331,8 +3354,9 @@ module Modality = struct
           Error
             (Error
                ( ax,
-                 { left = Join_with left; right = Join_with (Axis.proj ax c) }
-               )))
+                 { left = Empty (Join_with (axhint_get_const left));
+                   right = Empty (Join_with (Axis.proj ax c))
+                 } )))
       | Diff (_, _m0), Diff (_, _m1) ->
         (* [m1] is a left mode so it cannot appear on the right. So we can't do
            a proper check. However, this branch is only hit by
@@ -3404,8 +3428,7 @@ module Modality = struct
 
     type 'a axis = 'a Mode.axis
 
-    type error =
-      | Error : 'a axis * ('a raw, Hint.morph, Hint.const) axerror -> error
+    type error = Error : 'a axis * ('a raw, empty, empty) axerror -> error
 
     module Const = struct
       type t = Meet_const of Mode.Const.t
@@ -3422,11 +3445,15 @@ module Modality = struct
           if Mode.Const.le c0 c1
           then Ok ()
           else
-            let (Error (ax, { left; right })) =
-              Mode.axis_of_solver_error { left = c0; right = c1 }
+            let (Axis_with_proj_pair (ax, left, right)) =
+              Mode.axis_of_error c0 c1
             in
             Error
-              (Error (ax, { left = Meet_with left; right = Meet_with right }))
+              (Error
+                 ( ax,
+                   { left = Empty (Meet_with left);
+                     right = Empty (Meet_with right)
+                   } ))
 
       let concat ~then_ t =
         match then_, t with
@@ -3468,8 +3495,9 @@ module Modality = struct
           Error
             (Error
                ( ax,
-                 { left = Meet_with left; right = Meet_with (Axis.proj ax c) }
-               )))
+                 { left = Empty (Meet_with (axhint_get_const left));
+                   right = Empty (Meet_with (Axis.proj ax c))
+                 } )))
       | Exactly (_, _m0), Exactly (_, _m1) ->
         (* [m1] is a left mode, so there is no good way to check.
            However, this branch only hit by [wrap_constraint_with_shape],
@@ -3554,7 +3582,7 @@ module Modality = struct
   module Value = struct
     type error =
       | Error :
-          ('a, _, _) Value.Axis.t * ('a raw, Hint.morph, Hint.const) axerror
+          ('a, _, _) Value.Axis.t * ('a raw, empty, empty) axerror
           -> error
 
     type equate_error = equate_step * error
