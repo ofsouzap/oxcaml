@@ -121,8 +121,6 @@ module type Common = sig
 
   val newvar : unit -> ('l * 'r) t
 
-  val apply_hint : ('l * 'r) hint_morph -> ('l * 'r) t -> ('l * 'r) t
-
   val submode : (allowed * 'r) t -> ('l * allowed) t -> (unit, error) result
 
   val equate : lr -> lr -> (unit, equate_error) result
@@ -166,6 +164,8 @@ module type Common_axis = sig
           right_only hint_morph,
           hint_const )
         axerror
+
+  val apply_hint : ('l * 'r) hint_morph -> ('l * 'r) t -> ('l * 'r) t
 end
 
 module type Common_product = sig
@@ -189,6 +189,8 @@ module type Common_product = sig
        and type hint_const := hint_const
        and type error := error
        and module Const := Const
+
+  val apply_hint : ('l * 'r) hint_morph -> ('l * 'r) t -> ('l * 'r) t
 end
 
 module type S = sig
@@ -204,6 +206,11 @@ module type S = sig
       | Compose : ('l * 'r) morph * ('l * 'r) morph -> ('l * 'r) morph
       constraint 'd = _ * _
     [@@ocaml.warning "-62"]
+
+    (* This is needed for the destructive substitutions in [Common_axis] for
+       the monadic axis modules, as we can't use [neg] within the substitution due
+       to type checker limitations *)
+    type 'd neg_morph = 'd neg morph constraint 'd = _ * _
 
     val morph_none : _ morph
   end
@@ -350,7 +357,7 @@ module type S = sig
       Common_axis
         with module Const := Const
          and type 'd t = (Const.t, 'd neg) mode
-         and type 'd hint_morph := 'd Hint.morph
+         and type 'd hint_morph := 'd Hint.neg_morph
          and type hint_const := Hint.const
 
     val aliased : lr
@@ -374,7 +381,7 @@ module type S = sig
       Common_axis
         with module Const := Const
          and type 'd t = (Const.t, 'd neg) mode
-         and type 'd hint_morph := 'd Hint.morph
+         and type 'd hint_morph := 'd Hint.neg_morph
          and type hint_const := Hint.const
   end
 
@@ -439,7 +446,7 @@ module type S = sig
       Common_axis
         with module Const := Const
          and type 'd t = (Const.t, 'd neg) mode
-         and type 'd hint_morph := 'd Hint.morph
+         and type 'd hint_morph := 'd Hint.neg_morph
          and type hint_const := Hint.const
 
     val immutable : lr
@@ -494,7 +501,7 @@ module type S = sig
         Common_product
           with type Const.t = monadic
            and type 'a axis := (monadic, 'a) Axis.t
-           and type 'd hint_morph := 'd Hint.morph
+           and type 'd hint_morph := 'd Hint.neg_morph
            and type hint_const := Hint.const
 
       module Const_op : Lattice with type t = Const.t
@@ -602,12 +609,8 @@ module type S = sig
 
     type error =
       | Error :
-          ('a, _, _) Axis.t
-          * ( 'a,
-              left_only Hint.morph,
-              right_only Hint.morph,
-              Hint.const )
-            axerror
+          ('a, _ * _, 'l * 'r) Axis.t
+          * ('a, ('l * 'r) Hint.morph, ('r * 'l) Hint.morph, Hint.const) axerror
           -> error
 
     type 'd t = ('d Monadic.t, 'd Comonadic.t) monadic_comonadic
@@ -653,7 +656,7 @@ module type S = sig
     val zap_to_legacy : lr -> Const.t
 
     val comonadic_to_monadic :
-      ?hint:('r * 'l) Hint.morph -> ('l * 'r) Comonadic.t -> ('r * 'l) Monadic.t
+      ?hint:('l * 'r) Hint.morph -> ('l * 'r) Comonadic.t -> ('r * 'l) Monadic.t
 
     (* The following two are about the scenario where we partially apply a
        function [A -> B -> C] to [A] and get back [B -> C]. The mode of the
