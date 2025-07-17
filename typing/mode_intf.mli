@@ -173,7 +173,12 @@ end
 
 module type S = sig
   module Hint : sig
-    type const = None
+    type const =
+      | None
+      | Lazy
+      | Functor
+      | Function
+    (* TODO - add an argument to [Function] constructor for the locatlity context of the expected mode. *)
 
     type 'd morph =
       | None : (_ * _) morph

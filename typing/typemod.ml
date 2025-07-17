@@ -2815,7 +2815,7 @@ and type_module_aux ~alias ~hold_locks sttn funct_body anchor env smod =
           var, true
       in
       let newenv =
-        Env.add_closure_lock Functor Mode.Value.Comonadic.legacy newenv
+        Env.add_closure_lock Mode.Value.Comonadic.(of_const ~hint:Functor Const.legacy) newenv
       in
       let body, body_shape = type_module true funct_body None newenv sbody in
       { mod_desc = Tmod_functor(t_arg, body);

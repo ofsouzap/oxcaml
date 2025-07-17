@@ -330,7 +330,7 @@ type shared_context =
 type lock =
   | Escape_lock of escaping_context
   | Share_lock of shared_context
-  | Closure_lock of closure_context * Mode.Value.Comonadic.r
+  | Closure_lock of Mode.Value.Comonadic.r
   | Region_lock
   | Exclave_lock
   | Unboxed_lock (* to prevent capture of terms with non-value types *)
@@ -2756,10 +2756,8 @@ let add_share_lock shared_context env =
   let lock = Share_lock shared_context in
   add_lock lock env
 
-let add_closure_lock closure_context comonadic env =
-  let lock = Closure_lock
-    (closure_context,
-     Mode.Value.Comonadic.disallow_left comonadic)
+let add_closure_lock comonadic env =
+  let lock = Closure_lock (Mode.Value.Comonadic.disallow_left comonadic)
   in
   add_lock lock env
 
@@ -3235,7 +3233,7 @@ let share_mode ~errors ~env ~loc ~item ~lid vmode shared_context =
     {mode; context = Some shared_context}
 
 let closure_mode ~errors ~env ~loc ~item:_ ~lid
-  ({mode = {Mode.monadic; comonadic}; _} as vmode) _locality_context (comonadic0 : (_ * Allowance.allowed) Mode.Value.Comonadic.t) =
+  ({mode = {Mode.monadic; comonadic}; _} as vmode) (comonadic0 : (_ * Allowance.allowed) Mode.Value.Comonadic.t) =
   begin
     match
       Mode.Value.Comonadic.submode
@@ -3304,8 +3302,8 @@ let walk_locks ~errors ~loc ~env ~item ~lid mode ty locks =
           escape_mode ~errors ~env ~loc ~item ~lid vmode escaping_context
       | Share_lock shared_context ->
           share_mode ~errors ~env ~loc ~item ~lid vmode shared_context
-      | Closure_lock (locality_context, comonadic) ->
-          closure_mode ~errors ~env ~loc ~item ~lid vmode locality_context comonadic
+      | Closure_lock comonadic ->
+          closure_mode ~errors ~env ~loc ~item ~lid vmode comonadic
       | Exclave_lock ->
           exclave_mode ~errors ~env ~loc ~item ~lid vmode
       | Unboxed_lock ->

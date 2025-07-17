@@ -1551,7 +1551,11 @@ module Lattices_mono = struct
 end
 
 module Hint = struct
-  type const = None
+  type const =
+    | None
+    | Lazy
+    | Functor
+    | Function
 
   let const_none = None
 
@@ -1656,6 +1660,9 @@ type 'a axerror =
 
 let opt_sprint_const_hint : Hint.const -> string option = function
   | None -> None
+  | Lazy -> Some "is used in a lazy expression"
+  | Functor -> Some "is used in a functor"
+  | Function -> Some "is used in a function"
 
 let rec opt_sprint_morph_hint : type l r. (l * r) Hint.morph -> string option =
   let open Format in
