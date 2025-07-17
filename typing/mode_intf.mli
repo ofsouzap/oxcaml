@@ -94,8 +94,6 @@ type equate_step =
 module type Common = sig
   module Const : Lattice
 
-  type 'd hint_morph constraint 'd = 'l * 'r
-
   type hint_const
 
   type error
@@ -161,7 +159,6 @@ module type Common_axis = sig
   include
     Common
       with module Const := Const
-       and type 'd hint_morph := 'd hint_morph
        and type hint_const := hint_const
        and type error =
         ( Const.t,
@@ -190,8 +187,7 @@ module type Common_product = sig
 
   include
     Common
-      with type 'd hint_morph := 'd hint_morph
-       and type hint_const := hint_const
+      with type hint_const := hint_const
        and type error := error
        and module Const := Const
 
@@ -201,8 +197,6 @@ end
 module type S = sig
   module Hint : sig
     type const = None
-
-    val const_none : const
 
     type 'd morph =
       | None : (_ * _) morph
@@ -216,8 +210,6 @@ module type S = sig
        the monadic axis modules, as we can't use [neg] within the substitution due
        to type checker limitations *)
     type 'd neg_morph = 'd neg morph constraint 'd = _ * _
-
-    val morph_none : _ morph
   end
 
   val axhint_get_const : ('a, 'morph, 'const) axhint -> 'a
@@ -504,10 +496,7 @@ module type S = sig
   end
 
   module type Mode := sig
-    module Areality :
-      Common
-        with type 'd hint_morph := 'd Hint.morph
-         and type hint_const := Hint.const
+    module Areality : Common with type hint_const := Hint.const
 
     module Monadic : sig
       include
@@ -631,7 +620,6 @@ module type S = sig
     include
       Common
         with module Const := Const
-         and type 'd hint_morph := 'd Hint.morph
          and type hint_const := Hint.const
          and type error := error
          and type 'd t := 'd t
