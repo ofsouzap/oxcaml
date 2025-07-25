@@ -1619,13 +1619,16 @@ module Hint = struct
 
   let rec is_rigid : type l r. (l * r) morph -> bool = function
     | Debug _ -> true
-    | None | Skip -> assert false
+    | None | Skip -> true
+    (* | None | Skip -> assert false *)
     | Close_over _ -> true
     | Is_closed_by _ -> true
     | Captured_by_partial_application -> true
     | Adj_captured_by_partial_application -> true
-    | Crossing_left -> false
-    | Crossing_right -> false
+    | Crossing_left -> true
+    | Crossing_right -> true
+    (* | Crossing_left -> false
+       | Crossing_right -> false *)
     | Compose (x, y) -> is_rigid x || is_rigid y
 
   let morph_none = None
@@ -1775,49 +1778,38 @@ type 'a axerror =
     right_hint : 'a axhint
   }
 
-type print_hint_res =
-  | HintPrinted
-  | NothingPrinted
-
 (** Print out the text for a constant hint. Either prints nothing when there is
   no hint and returns [NothingPrinted] or prints " because {hint}" where {hint}
   is text for the specific constant hint and returns [HintPrinted]. *)
-let print_const_hint a_obj a ppf : Hint.const -> print_hint_res =
+let print_const_hint a_obj a : Hint.const -> (Format.formatter -> unit) option =
   let open Format in
-  let wrap_print_hint t = fprintf ppf "@ because %t" t in
+  let wrap_print_hint t = dprintf "@ because %t" t in
   function
-  | None -> NothingPrinted
+  | None -> None
   | Result_of_lazy ->
-    wrap_print_hint (dprintf "it is the result of a lazy expression");
-    HintPrinted
+    Some (wrap_print_hint (dprintf "it is the result of a lazy expression"))
   | Lazy_closure ->
-    wrap_print_hint (dprintf "lazy expressions are always %a" (C.print a_obj) a);
-    HintPrinted
+    Some
+      (wrap_print_hint
+         (dprintf "lazy expressions are always %a" (C.print a_obj) a))
   | Class ->
-    wrap_print_hint (dprintf "classes are always %a" (C.print a_obj) a);
-    HintPrinted
+    Some (wrap_print_hint (dprintf "classes are always %a" (C.print a_obj) a))
   | Tailcall_function ->
-    wrap_print_hint (dprintf "it is the function in a tail call");
-    HintPrinted
+    Some (wrap_print_hint (dprintf "it is the function in a tail call"))
   | Tailcall_argument ->
-    wrap_print_hint (dprintf "it is an argument in a tail call");
-    HintPrinted
+    Some (wrap_print_hint (dprintf "it is an argument in a tail call"))
   | Mutable_read ->
-    wrap_print_hint (dprintf "it has a mutable field read from");
-    HintPrinted
+    Some (wrap_print_hint (dprintf "it has a mutable field read from"))
   | Mutable_write ->
-    wrap_print_hint (dprintf "it has a mutable field written to");
-    HintPrinted
+    Some (wrap_print_hint (dprintf "it has a mutable field written to"))
   | Forced_lazy_expression ->
-    wrap_print_hint (dprintf "it is a lazy expression that is forced");
-    HintPrinted
+    Some (wrap_print_hint (dprintf "it is a lazy expression that is forced"))
   | Is_function_return ->
-    wrap_print_hint
-      (dprintf "it is a function return value without an exclave annotation");
-    HintPrinted
+    Some
+      (wrap_print_hint
+         (dprintf "it is a function return value without an exclave annotation"))
   | Stack_expression ->
-    wrap_print_hint (dprintf "it is a stack expression");
-    HintPrinted
+    Some (wrap_print_hint (dprintf "it is a stack expression"))
 
 type print_morph_hint =
   | Skip
@@ -1829,7 +1821,6 @@ type print_morph_hint =
   | Print_then_continue of (Format.formatter -> unit)
       (** [Print_then_continue pp] means we print this line, using [pp] to print the
       morph hint, then continue onto the next hint *)
-  | Debug_print_then_continue of (Format.formatter -> unit)
 
 (** Get a printer for a single morph hint, or a special output if the hint requires
   special behaviour *)
@@ -1837,17 +1828,11 @@ let rec print_morph_hint : type l r. (l * r) Hint.morph -> print_morph_hint =
   let open Format in
   fun hint ->
     match hint with
-    (* | Debug s ->
-       let _ = Skip in
-       Debug_print_then_continue (dprintf "DEBUG[%s]" s) *)
+    (* | Debug s -> Print_then_continue (dprintf "[debug: %s]" s)
+       | None -> Print_then_continue (dprintf "[none]")
+       | Skip -> Print_then_continue (dprintf "[skip]") *)
     | Debug _ -> Skip
-    (* | None ->
-       let _ = Stop in
-       Debug_print_then_continue (dprintf "[None]") *)
     | None -> Stop
-    (* | Skip ->
-       let _ = Skip in
-       Debug_print_then_continue (dprintf "[Skip]") *)
     | Skip -> Skip
     | Close_over closure ->
       (* CR pdsouza: in the future, we should print out the code at the mentioned location, instead of just the location *)
@@ -1866,7 +1851,9 @@ let rec print_morph_hint : type l r. (l * r) Hint.morph -> print_morph_hint =
       Print_then_continue
         (dprintf "has a partial application capturing a value")
     | Crossing_left | Crossing_right ->
-      Print_then_continue (dprintf "crosses with something")
+      Print_then_continue
+        (* TODO - change so that just says "crosses from {mode}", not "something which is" *)
+        (dprintf "crosses from something")
     | Compose (hint1, hint2) -> (
       match print_morph_hint hint1 with
       | Skip -> print_morph_hint hint2
@@ -1876,86 +1863,110 @@ let rec print_morph_hint : type l r. (l * r) Hint.morph -> print_morph_hint =
         | Skip -> Print_then_continue pp1
         | Stop -> Stop
         | Print_then_continue pp2 ->
-          Print_then_continue (dprintf "%t@ which %t" pp1 pp2)
-        | Debug_print_then_continue pp2 ->
-          Debug_print_then_continue (dprintf "%t@ which %t" pp1 pp2))
-      | Debug_print_then_continue pp1 -> (
-        match print_morph_hint hint2 with
-        | Skip -> Print_then_continue pp1
-        | Stop -> Stop
-        | Print_then_continue pp2 ->
-          Debug_print_then_continue (dprintf "%t@ which %t" pp1 pp2)
-        | Debug_print_then_continue pp2 ->
-          Debug_print_then_continue (dprintf "%t@ which %t" pp1 pp2)))
+          Print_then_continue (dprintf "%t@ which %t" pp1 pp2)))
+
+type print_axhint_chain_res =
+  | Print_hint :
+      'a C.obj * 'a * (Format.formatter -> unit)
+      -> print_axhint_chain_res
+      (** [Print_hint (a_obj, a, pp)] tells the reporter that the next printed
+          mode will be [a] of object [a_obj] and to use [pp] to print the
+          remainder of the chain *)
+  | Print_only_mode :
+      'a C.obj * 'a * (Format.formatter -> unit)
+      -> print_axhint_chain_res
+      (** [Print_only_mode (a_obj, a, pp)] tells the reporter that the next printed
+          mode will be [a] of object [a_obj], which we can print using [pp],
+          and that the remainder of the chain has nothing to print. *)
 
 (** Print a "chain" of axhints, which will consist of zero or more [Morph] axhints,
 terminated with an [Empty] or [Const] axhint *)
 let rec print_axhint_chain :
     type a.
-    [`Actual | `Expected] ->
-    a ->
-    a C.obj ->
-    a axhint ->
-    Format.formatter ->
-    print_hint_res =
- fun side (a : a) (a_obj : a C.obj) (hint : a axhint) ppf ->
+    [`Actual | `Expected] -> a -> a C.obj -> a axhint -> print_axhint_chain_res
+    =
+ fun side (a : a) (a_obj : a C.obj) (hint : a axhint) ->
   let open Format in
-  let print_mode : type x. x C.obj -> x -> _ =
+  let print_mode : type x. x C.obj -> x -> Format.formatter -> unit =
    (* This is a wrapping around the standard [C.print],
       to make the error messages more readable for the user *)
    fun x_obj x ->
     let mode_printer = Misc.Style.as_inline_code (C.print x_obj) in
-    let default_printer () = mode_printer ppf x in
+    let default_printer ppf = mode_printer ppf x in
     match side, x_obj, x with
     | _, Regionality, Regional ->
       (* In the special case that we are talking about the regional mode,
          we print a more user-friendly message, as below, instead of referring
          directly to the regional mode, as the user doesn't need to know about it *)
-      fprintf ppf "local to the parent region"
+      dprintf "local to the parent region"
     | `Expected, Contention_op, Shared ->
       (* When printing the "shared" mode on the "expected" side (noting that expected
          modes only appear on the right side of inequalities (on the "greater" side)),
          we print that it was expected to be either shared or uncontended, to help
          the user. We don't do anything similar when printing on the "actual" side
          as this is confusing to put in an error message. *)
-      fprintf ppf "%a or %a" mode_printer C.Contention.Shared mode_printer
+      dprintf "%a or %a" mode_printer C.Contention.Shared mode_printer
         C.Contention.Uncontended
     | _ ->
       (* Otherwise, we just use the default mode constant printer *)
-      default_printer ()
+      default_printer
    [@@ocaml.warning "-4"]
+  in
+  let check_should_perform_non_rigid_skip :
+      type a b l r. a C.obj -> a -> b C.obj -> b -> (l * r) Hint.morph -> bool =
+   fun a_obj a next_mode_obj next_mode morph_hint ->
+    match C.eq_obj a_obj next_mode_obj with
+    | Some Refl
+      when Misc.Le_result.equal ~le:(C.le a_obj) a next_mode
+           && not (Hint.is_rigid morph_hint) ->
+      (* When the [a] and [next_mode] modes are equal, and the hint is non-rigid,
+         we can skip printing the line. *)
+      true
+    | Some Refl | None -> false
   in
   match hint with
   | Morph (morph_hint, b, b_obj, b_hint, _morph) -> (
-    let temp_thing pp =
-      print_mode a_obj a;
-      fprintf ppf "@ because it %t@ which is " pp;
-      ignore (print_axhint_chain side b b_obj b_hint ppf);
-      HintPrinted
-    in
     match print_morph_hint morph_hint with
     | Skip ->
       (* This is a case where we skip a line without printing the mode first *)
-      print_axhint_chain side b b_obj b_hint ppf
-    | Stop ->
-      print_mode a_obj a;
-      NothingPrinted
-    | Print_then_continue pp -> (
-      match C.eq_obj a_obj b_obj with
-      | Some Refl
-        when Misc.Le_result.equal ~le:(C.le a_obj) a b
-             && not (Hint.is_rigid morph_hint) ->
-        (* When the [a] and [b] modes are equal, and the hint is non-rigid,
-           we can definitely skip printing this line. *)
-        print_axhint_chain side b b_obj b_hint ppf
-      | Some Refl | None -> temp_thing pp)
-    | Debug_print_then_continue pp -> temp_thing pp)
-  | Const const_hint ->
-    print_mode a_obj a;
-    print_const_hint a_obj a ppf const_hint
-  | Empty ->
-    print_mode a_obj a;
-    NothingPrinted
+      print_axhint_chain side b b_obj b_hint
+    | Stop -> Print_only_mode (a_obj, a, print_mode a_obj a)
+    | Print_then_continue morph_hint_pp -> (
+      match print_axhint_chain side b b_obj b_hint with
+      | Print_only_mode (next_mode_obj, next_mode, next_mode_pp) ->
+        if check_should_perform_non_rigid_skip a_obj a next_mode_obj next_mode
+             morph_hint
+        then
+          (* When the remaining chain just prints a next mode, which allows
+             us to skip the current morph hint, we just return a mode to print *)
+          Print_only_mode (next_mode_obj, next_mode, next_mode_pp)
+        else
+          (* When the remaining chain just prints a next mode, but we still
+             want to print the current morph hint *)
+          Print_hint
+            ( a_obj,
+              a,
+              dprintf "%t@ because it %t@ which is %t" (print_mode a_obj a)
+                morph_hint_pp next_mode_pp )
+      | Print_hint (next_mode_obj, next_mode, b_hint_pp) ->
+        if check_should_perform_non_rigid_skip a_obj a next_mode_obj next_mode
+             morph_hint
+        then
+          (* Skip the current hint, just use the output from the remaining chain *)
+          Print_hint (next_mode_obj, next_mode, b_hint_pp)
+        else
+          (* Add this morph hint to what we want to print *)
+          Print_hint
+            ( a_obj,
+              a,
+              dprintf "%t@ because it %t@ which is %t" (print_mode a_obj a)
+                morph_hint_pp b_hint_pp )))
+  | Const const_hint -> (
+    match print_const_hint a_obj a const_hint with
+    | None -> Print_only_mode (a_obj, a, print_mode a_obj a)
+    | Some const_hint_pp ->
+      Print_hint (a_obj, a, dprintf "%t%t" (print_mode a_obj a) const_hint_pp))
+  | Empty -> Print_only_mode (a_obj, a, print_mode a_obj a)
 
 (** Report an axerror, printing error traces for both the left and the right sides *)
 let report_axerror :
@@ -1974,10 +1985,13 @@ let report_axerror :
     fprintf ppf "The %a %a is " Hint.print_lock_item target_item
       (Misc.Style.as_inline_code !print_longident)
       target_lid);
-  (match print_axhint_chain `Actual err.left left_obj err.left_hint ppf with
-  | HintPrinted -> fprintf ppf ".@\nHowever, it is expected to be "
-  | NothingPrinted -> fprintf ppf "@ but expected to be ");
-  ignore (print_axhint_chain `Expected err.right right_obj err.right_hint ppf);
+  (match print_axhint_chain `Actual err.left left_obj err.left_hint with
+  | Print_hint (_, _, axhint_chain_pp) ->
+    fprintf ppf "%t.@\nHowever, it is expected to be " axhint_chain_pp
+  | Print_only_mode (_, _, mode_pp) ->
+    fprintf ppf "%t@ but expected to be " mode_pp);
+  (match print_axhint_chain `Expected err.right right_obj err.right_hint with
+  | Print_hint (_, _, pp) | Print_only_mode (_, _, pp) -> pp ppf);
   fprintf ppf "."
 
 (** Description of an input axis responsible for an output axis of a morphism *)

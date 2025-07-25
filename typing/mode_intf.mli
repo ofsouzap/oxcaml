@@ -235,7 +235,12 @@ module type S = sig
             trace on seeing this. *)
       | Skip : (_ * _) morph
           (** An empty morphism hint, but telling the error reporter to continue the trace,
-            instead of terminating it there, as it would for [None]. *)
+            instead of terminating it there, as it would for [None].
+
+            INVARIANT: this must only be used as the hint for a morphism when the
+              morphism doesn't change modes of objects. This requirement is relaxed,
+              however, when we intend to immediately compose the hint with another
+              non-[Skip] hint. An example of this is in [Crossing.Monadic.apply_right] *)
       | Close_over : closure_details -> ('l * disallowed) morph
       | Is_closed_by : closure_details -> (disallowed * 'r) morph
       | Captured_by_partial_application : (disallowed * 'r) morph
